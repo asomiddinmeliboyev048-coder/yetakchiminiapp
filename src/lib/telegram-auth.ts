@@ -3,42 +3,52 @@ import "server-only";
 
 import { createHmac, timingSafeEqual } from "node:crypto";
 
-export type TelegramWebAppUser = {
+export interface TelegramWebAppUser {
   id: number;
   first_name: string;
   last_name?: string;
   username?: string;
-};
+}
+
+interface TelegramInitDataUser {
+  id?: number;
+  first_name?: string;
+  last_name?: string;
+  username?: string;
+}
 
 const MAX_AUTH_AGE_SECONDS = 24 * 60 * 60;
-const CLOCK_SKEW_SECONDS = 60;
+const MAX_FUTURE_SKEW_SECONDS = 60;
 
+/**
+ * Telegram Mini App initData ma'lumotlarini tekshiradi.
+ * Ma'lumot haqiqiy bo'lsa foydalanuvchini, aks holda null qaytaradi.
+ */
 export function verifyTelegramInitData(
   initData: string
 ): TelegramWebAppUser | null {
-  const botToken = process.env.TELEGRAM_BOT_TOKEN;
-
-  if (!botToken || !initData) {
-    return null;
-  }
-
   try {
-    const params = new URLSearchParams(initData);
+    const botToken = process.env.TELEGRAM_BOT_TOKEN;
 
-    const receivedHash = params.get("hash");
-    const authDateValue = params.get("auth_date");
-    const userValue = params.get("user");
-
-    if (
-      !receivedHash ||
-      !/^[a-f0-9]{64}$/i.test(receivedHash) ||
-      !authDateValue ||
-      !userValue
-    ) {
+    if (!botToken || !initData || initData.length > 16_384) {
       return null;
     }
 
-    const authDate = Number(authDateValue);
+    const params = new URLSearchParams(initData);
+    const receivedHash = params.get("hash");
+    const userString = params.get("user");
+    const authDateString = params.get("auth_date");
+
+    if (!receivedHash || !userString || !authDateString) {
+      return null;
+    }
+
+    // Telegram hash qiymati 64 ta hexadecimal belgidan iborat.
+    if (!/^[a-f0-9]{64}$/i.test(receivedHash)) {
+      return null;
+    }
+
+    const authDate = Number(authDateString);
 
     if (!Number.isSafeInteger(authDate) || authDate <= 0) {
       return null;
@@ -46,72 +56,68 @@ export function verifyTelegramInitData(
 
     const now = Math.floor(Date.now() / 1000);
 
+    // Kelajakdagi yoki muddati o'tgan initData'ni qabul qilmaymiz.
     if (
-      authDate > now + CLOCK_SKEW_SECONDS ||
+      authDate > now + MAX_FUTURE_SKEW_SECONDS ||
       now - authDate > MAX_AUTH_AGE_SECONDS
     ) {
       return null;
     }
 
+    // Telegram tekshiruvida hash parametrining o'zi kiritilmaydi.
     params.delete("hash");
 
-    const dataCheckString = [...params.entries()]
-      .sort(([keyA], [keyB]) =>
-        keyA < keyB ? -1 : keyA > keyB ? 1 : 0
-      )
+    const dataCheckString = Array.from(params.entries())
+      .sort(([keyA], [keyB]) => keyA.localeCompare(keyB))
       .map(([key, value]) => `${key}=${value}`)
       .join("\n");
 
+    // Telegram Web Apps rasmiy HMAC-SHA-256 tekshiruvi.
     const secretKey = createHmac("sha256", "WebAppData")
       .update(botToken)
       .digest();
 
     const calculatedHash = createHmac("sha256", secretKey)
       .update(dataCheckString)
-      .digest("hex");
+      .digest();
 
-    const receivedBuffer = Buffer.from(receivedHash, "hex");
-    const calculatedBuffer = Buffer.from(calculatedHash, "hex");
+    const providedHash = Buffer.from(receivedHash, "hex");
 
     if (
-      receivedBuffer.length !== calculatedBuffer.length ||
-      !timingSafeEqual(receivedBuffer, calculatedBuffer)
+      providedHash.length !== calculatedHash.length ||
+      !timingSafeEqual(providedHash, calculatedHash)
     ) {
       return null;
     }
 
-    const parsedUser: unknown = JSON.parse(userValue);
+    const parsedUser = JSON.parse(userString) as TelegramInitDataUser;
 
     if (
-      typeof parsedUser !== "object" ||
-      parsedUser === null ||
-      Array.isArray(parsedUser)
-    ) {
-      return null;
-    }
-
-    const user = parsedUser as Record<string, unknown>;
-
-    if (
-      typeof user.id !== "number" ||
-      !Number.isSafeInteger(user.id) ||
-      user.id <= 0 ||
-      typeof user.first_name !== "string"
+      !parsedUser ||
+      !Number.isSafeInteger(parsedUser.id) ||
+      typeof parsedUser.id !== "number" ||
+      parsedUser.id <= 0 ||
+      typeof parsedUser.first_name !== "string"
     ) {
       return null;
     }
 
     return {
-      id: user.id,
-      first_name: user.first_name,
-      ...(typeof user.last_name === "string"
-        ? { last_name: user.last_name }
+      id: parsedUser.id,
+      first_name: parsedUser.first_name,
+      ...(typeof parsedUser.last_name === "string"
+        ? { last_name: parsedUser.last_name }
         : {}),
-      ...(typeof user.username === "string"
-        ? { username: user.username }
+      ...(typeof parsedUser.username === "string"
+        ? { username: parsedUser.username }
         : {}),
     };
-  } catch {
+  } catch (error) {
+    console.error(
+      "[telegram-auth] Telegram initData tekshirishda xatolik:",
+      error instanceof Error ? error.message : "Noma'lum xatolik"
+    );
+
     return null;
   }
 }
