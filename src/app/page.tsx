@@ -1,7 +1,7 @@
 
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   BookOpen,
   CalendarDays,
@@ -18,40 +18,50 @@ import {
   Settings2,
   Sparkles,
   Sun,
+  UserRound,
   Volume2,
   X,
 } from "lucide-react";
 
-type Tab = "home" | "duas" | "tasbih" | "daily";
-type PrayerTimes = Record<string, string>;
+type Tab = "home" | "duas" | "tasbih" | "daily" | "profile";
 
-type TelegramProfile = {
-  telegram_id: number | string;
-  language?: string | null;
-  city?: string | null;
-  prayer_reminders?: boolean | null;
-  prayer_reminders_enabled?: boolean | null;
-  daily_reminders?: boolean | null;
+type UserProfile = {
+  telegram_id?: number;
   first_name?: string | null;
   last_name?: string | null;
   username?: string | null;
   phone_number?: string | null;
+  language?: string | null;
+  city?: string | null;
+  prayer_reminders?: boolean;
+  prayer_reminders_enabled?: boolean;
+  daily_reminders?: boolean;
 };
 
+type TelegramWindow = Window & {
+  Telegram?: { WebApp?: { initData?: string; ready?: () => void; expand?: () => void } };
+};
+
+function getTelegramInitData(): string {
+  if (typeof window === "undefined") return "";
+  return (window as TelegramWindow).Telegram?.WebApp?.initData ?? "";
+}
+type PrayerTimes = Record<string, string>;
+
 const cities = [
-  { value: "Tashkent", label: "Toshkent", apiCity: "Toshkent" },
-  { value: "Samarkand", label: "Samarqand", apiCity: "Samarqand" },
-  { value: "Bukhara", label: "Buxoro", apiCity: "Buxoro" },
-  { value: "Jizzax", label: "Jizzax", apiCity: "Jizzax" },
-  { value: "Navoiy", label: "Navoiy", apiCity: "Navoiy" },
-  { value: "Sirdaryo", label: "Sirdaryo", apiCity: "Sirdaryo" },
-  { value: "Andijan", label: "Andijon", apiCity: "Andijon" },
-  { value: "Namangan", label: "Namangan", apiCity: "Namangan" },
-  { value: "Fergana", label: "Farg‘ona", apiCity: "Farg‘ona" },
-  { value: "Karshi", label: "Qarshi", apiCity: "Qarshi" },
-  { value: "Nukus", label: "Nukus", apiCity: "Nukus" },
-  { value: "Termez", label: "Termiz", apiCity: "Termiz" },
-  { value: "Urgench", label: "Urganch", apiCity: "Urganch" },
+  { value: "Tashkent", label: "Toshkent" },
+  { value: "Samarkand", label: "Samarqand" },
+  { value: "Bukhara", label: "Buxoro" },
+  { value: "Jizzax", label: "Jizzax" },
+  { value: "Navoiy", label: "Navoiy" },
+  { value: "Sirdaryo", label: "Sirdaryo" },
+  { value: "Andijan", label: "Andijon" },
+  { value: "Namangan", label: "Namangan" },
+  { value: "Fergana", label: "Farg‘ona" },
+  { value: "Karshi", label: "Qarshi" },
+  { value: "Nukus", label: "Nukus" },
+  { value: "Termez", label: "Termiz" },
+  { value: "Urgench", label: "Urganch" },
 ];
 
 const prayerList = [
@@ -116,17 +126,6 @@ const dailyItems = [
   },
 ];
 
-function isValidCity(city: unknown): city is string {
-  return (
-    typeof city === "string" &&
-    cities.some((item) => item.value === city)
-  );
-}
-
-function getPrayerApiCity(city: string): string {
-  return cities.find((item) => item.value === city)?.apiCity ?? "Toshkent";
-}
-
 function getTashkentDate(timestamp: number): Date {
   return new Date(
     new Date(timestamp).toLocaleString("en-US", {
@@ -154,27 +153,6 @@ function getMinutes(value?: string): number {
   return hours * 60 + minutes;
 }
 
-async function readJson(response: Response): Promise<unknown> {
-  try {
-    return await response.json();
-  } catch {
-    return null;
-  }
-}
-
-function getApiError(data: unknown, fallback: string): string {
-  if (
-    data &&
-    typeof data === "object" &&
-    "error" in data &&
-    typeof data.error === "string"
-  ) {
-    return data.error;
-  }
-
-  return fallback;
-}
-
 export default function Home() {
   const [tab, setTab] = useState<Tab>("home");
   const [count, setCount] = useState(0);
@@ -186,329 +164,138 @@ export default function Home() {
 
   const [prayerOpen, setPrayerOpen] = useState(false);
   const [prayerCity, setPrayerCity] = useState("Tashkent");
-  const [telegramSyncReady, setTelegramSyncReady] = useState(false);
   const [prayerTimes, setPrayerTimes] = useState<PrayerTimes | null>(null);
   const [prayerLoading, setPrayerLoading] = useState(false);
   const [prayerError, setPrayerError] = useState("");
   const [retryKey, setRetryKey] = useState(0);
 
-  const telegramInitDataRef = useRef<string | null>(null);
-  const profileCityRef = useRef<string | null>(null);
-  const cityChangeVersionRef = useRef(0);
-  const handledCityChangeVersionRef = useRef(0);
-
+  // Soat boshlang‘ich renderda hisoblanmaydi.
   const [clock, setClock] = useState(0);
 
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [soundEnabled, setSoundEnabled] = useState(false);
   const [vibrationEnabled, setVibrationEnabled] = useState(true);
-  const [prayerRemindersEnabled, setPrayerRemindersEnabled] = useState(false);
-  const [reminderLoading, setReminderLoading] = useState(true);
-  const [reminderSaving, setReminderSaving] = useState(false);
-  const [reminderAvailable, setReminderAvailable] = useState(false);
-  const [reminderError, setReminderError] = useState("");
+  const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [profileSaved, setProfileSaved] = useState(false);
+  const [profileLoading, setProfileLoading] = useState(false);
+  const [profileError, setProfileError] = useState("");
+  const [profileMessage, setProfileMessage] = useState("");
+  const [prayerReminders, setPrayerReminders] = useState(false);
+  const [dailyReminders, setDailyReminders] = useState(false);
+  const [profileSaving, setProfileSaving] = useState(false);
 
-  // Telegram profilini va avval saqlangan shaharni yuklash.
+  // Telegram Mini App boshlang‘ich sozlamalari.
   useEffect(() => {
-    let cancelled = false;
-
-    async function syncTelegramProfile() {
-      let savedCity: string | null = null;
-
-      try {
-        savedCity = localStorage.getItem("yetaklovchi-prayer-city");
-      } catch (error) {
-        console.error("Saqlangan shaharni o'qish xatosi:", error);
-      }
-
-      try {
-        const { default: WebApp } = await import("@twa-dev/sdk");
-
-        if (cancelled) return;
-
-        WebApp.ready();
-
-        const initData = WebApp.initData;
-
-        if (!initData) {
-          if (isValidCity(savedCity)) {
-            setPrayerCity(savedCity);
-          }
-
-          setTelegramSyncReady(true);
-          setReminderAvailable(false);
-          setReminderLoading(false);
-          return;
-        }
-
-        telegramInitDataRef.current = initData;
-
-        const response = await fetch("/api/profile", {
-          method: "GET",
-          headers: {
-            "x-telegram-init-data": initData,
-          },
-          cache: "no-store",
-        });
-
-        const result = await readJson(response);
-
-        if (!response.ok) {
-          throw new Error(
-            getApiError(result, "Profilni yuklab bo'lmadi."),
-          );
-        }
-
-        if (
-          !result ||
-          typeof result !== "object" ||
-          !("profile" in result)
-        ) {
-          throw new Error("Profil ma'lumotlari noto'g'ri qaytdi.");
-        }
-
-        const profile = (result as { profile: TelegramProfile }).profile;
-
-        if (cancelled) return;
-
-        const city: unknown = profile?.city;
-
-        profileCityRef.current = isValidCity(city) ? city : null;
-
-        if (cityChangeVersionRef.current === 0) {
-          if (isValidCity(city)) {
-            setPrayerCity(city);
-          } else if (isValidCity(savedCity)) {
-            setPrayerCity(savedCity);
-          }
-        }
-
-        setTelegramSyncReady(true);
-      } catch (error) {
-        console.error("Telegram profil sinxronlash xatosi:", error);
-
-        if (cancelled) return;
-
-        if (
-          cityChangeVersionRef.current === 0 &&
-          isValidCity(savedCity)
-        ) {
-          setPrayerCity(savedCity);
-        }
-
-        setTelegramSyncReady(true);
-      }
-    }
-
-    void syncTelegramProfile();
-
-    return () => {
-      cancelled = true;
-    };
+    const webApp = (window as TelegramWindow).Telegram?.WebApp;
+    webApp?.ready?.();
+    webApp?.expand?.();
   }, []);
 
-  // Namoz eslatmasi holatini bazadan olish.
+  // Profil va eslatma sozlamalarini Telegram initData orqali yuklash.
   useEffect(() => {
-    if (!telegramSyncReady) return;
+    if (tab !== "profile") return;
 
-    const initData = telegramInitDataRef.current;
-
+    const initData = getTelegramInitData();
     if (!initData) {
-      setReminderAvailable(false);
-      setReminderLoading(false);
+      setProfileError("Profilni ko‘rish uchun Yetaklovchi Mini App’ni Telegram ichidan oching.");
       return;
     }
 
-    let cancelled = false;
     const controller = new AbortController();
+    const headers = { "x-telegram-init-data": initData };
 
-    async function loadPrayerReminderSetting() {
+    async function loadProfile() {
+      setProfileLoading(true);
+      setProfileError("");
+      setProfileMessage("");
       try {
-        setReminderLoading(true);
+        const [profileResponse, settingsResponse] = await Promise.all([
+          fetch("/api/profile", { headers, cache: "no-store", signal: controller.signal }),
+          fetch("/api/settings", { headers, cache: "no-store", signal: controller.signal }),
+        ]);
+        const profileData = await profileResponse.json();
+        const settingsData = await settingsResponse.json();
+        if (!profileResponse.ok) throw new Error(profileData.error || "Profilni yuklab bo‘lmadi.");
+        if (!settingsResponse.ok) throw new Error(settingsData.error || "Sozlamalarni yuklab bo‘lmadi.");
 
-        const response = await fetch("/api/settings", {
-          method: "GET",
-          headers: {
-            "x-telegram-init-data": initData,
-          },
-          cache: "no-store",
-          signal: controller.signal,
-        });
+        const nextProfile = (profileData.profile ?? null) as UserProfile | null;
+        setProfile(nextProfile);
+        setProfileSaved(Boolean(profileData.profileSaved));
+        setPrayerReminders(Boolean(settingsData.prayerReminders));
+        setDailyReminders(Boolean(settingsData.dailyReminders));
 
-        const result = await readJson(response);
-
-        if (!response.ok) {
-          throw new Error(
-            getApiError(
-              result,
-              "Namoz eslatma holatini yuklab bo'lmadi.",
-            ),
-          );
-        }
-
-        if (
-          !result ||
-          typeof result !== "object" ||
-          !("prayerRemindersEnabled" in result) ||
-          typeof result.prayerRemindersEnabled !== "boolean"
-        ) {
-          throw new Error("Namoz eslatma holati noto'g'ri qaytdi.");
-        }
-
-        if (!cancelled) {
-          setPrayerRemindersEnabled(result.prayerRemindersEnabled);
-          setReminderAvailable(true);
-          setReminderError("");
+        const savedCity = nextProfile?.city;
+        if (savedCity && cities.some((city) => city.value.toLowerCase() === savedCity.toLowerCase())) {
+          setPrayerCity(cities.find((city) => city.value.toLowerCase() === savedCity.toLowerCase())!.value);
         }
       } catch (error) {
-        if (
-          error instanceof Error &&
-          error.name !== "AbortError" &&
-          !cancelled
-        ) {
-          console.error("Namoz eslatma holatini yuklash xatosi:", error);
-          setReminderError(error.message);
-          setReminderAvailable(true);
-        }
+        if (error instanceof Error && error.name === "AbortError") return;
+        setProfileError(error instanceof Error ? error.message : "Profilni yuklashda xatolik yuz berdi.");
       } finally {
-        if (!cancelled) {
-          setReminderLoading(false);
-        }
+        if (!controller.signal.aborted) setProfileLoading(false);
       }
     }
 
-    void loadPrayerReminderSetting();
+    void loadProfile();
+    return () => controller.abort();
+  }, [tab]);
 
-    return () => {
-      cancelled = true;
-      controller.abort();
-    };
-  }, [telegramSyncReady]);
-
-  // Tanlangan shaharni Mini App profili bilan sinxronlashtirish.
-  useEffect(() => {
-    if (
-      !telegramSyncReady ||
-      cityChangeVersionRef.current === 0 ||
-      cityChangeVersionRef.current === handledCityChangeVersionRef.current
-    ) {
+  async function saveProfileCity(city: string) {
+    setPrayerCity(city);
+    setProfileMessage("");
+    setProfileError("");
+    const initData = getTelegramInitData();
+    if (!initData) {
+      setProfileError("Telegram ichidan ochilgan Mini App talab qilinadi.");
       return;
     }
-
-    const initData = telegramInitDataRef.current;
-
-    if (!initData) return;
-
-    const version = cityChangeVersionRef.current;
-    const cityToSave = prayerCity;
-
-    handledCityChangeVersionRef.current = version;
-
-    if (cityToSave === profileCityRef.current) return;
-
-    const controller = new AbortController();
-
-    async function saveCity() {
-      try {
-        const response = await fetch("/api/profile", {
-          method: "PATCH",
-          headers: {
-            "Content-Type": "application/json",
-            "x-telegram-init-data": initData,
-          },
-          body: JSON.stringify({ city: cityToSave }),
-          signal: controller.signal,
-        });
-
-        const result = await readJson(response);
-
-        if (!response.ok) {
-          throw new Error(
-            getApiError(result, "Shaharni bazaga saqlab bo'lmadi."),
-          );
-        }
-
-        if (!controller.signal.aborted) {
-          profileCityRef.current = cityToSave;
-        }
-      } catch (error) {
-        if (
-          error instanceof Error &&
-          error.name !== "AbortError"
-        ) {
-          console.error("Shaharni saqlash xatosi:", error);
-        }
-      }
+    setProfileSaving(true);
+    try {
+      const response = await fetch("/api/profile", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", "x-telegram-init-data": initData },
+        body: JSON.stringify({ city }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Shaharni saqlab bo‘lmadi.");
+      setProfile(data.profile ?? profile);
+      setProfileSaved(true);
+      setProfileMessage("Shahar saqlandi.");
+    } catch (error) {
+      setProfileError(error instanceof Error ? error.message : "Shaharni saqlashda xatolik yuz berdi.");
+    } finally {
+      setProfileSaving(false);
     }
-
-    void saveCity();
-
-    return () => controller.abort();
-  }, [prayerCity, telegramSyncReady]);
-
-  function handlePrayerCityChange(city: string) {
-    if (city === prayerCity) return;
-
-    cityChangeVersionRef.current += 1;
-    setPrayerCity(city);
   }
 
-  async function updatePrayerReminderSetting(enabled: boolean) {
-    const initData = telegramInitDataRef.current;
-
-    if (!initData || !reminderAvailable || reminderSaving) return;
-
-    setReminderSaving(true);
-    setReminderError("");
-
+  async function saveReminderSettings(nextPrayer: boolean, nextDaily: boolean) {
+    setPrayerReminders(nextPrayer);
+    setDailyReminders(nextDaily);
+    setProfileError("");
+    setProfileMessage("");
+    const initData = getTelegramInitData();
+    if (!initData) {
+      setProfileError("Telegram ichidan ochilgan Mini App talab qilinadi.");
+      return;
+    }
+    setProfileSaving(true);
     try {
       const response = await fetch("/api/settings", {
         method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          "x-telegram-init-data": initData,
-        },
-        body: JSON.stringify({
-          prayerRemindersEnabled: enabled,
-        }),
+        headers: { "Content-Type": "application/json", "x-telegram-init-data": initData },
+        body: JSON.stringify({ prayerReminders: nextPrayer, dailyReminders: nextDaily }),
       });
-
-      const result = await readJson(response);
-
-      if (!response.ok) {
-        throw new Error(
-          getApiError(
-            result,
-            "Namoz eslatma sozlamasini saqlab bo'lmadi.",
-          ),
-        );
-      }
-
-      if (
-        !result ||
-        typeof result !== "object" ||
-        !("prayerRemindersEnabled" in result) ||
-        typeof result.prayerRemindersEnabled !== "boolean"
-      ) {
-        throw new Error("Saqlangan namoz eslatma holati noto'g'ri qaytdi.");
-      }
-
-      setPrayerRemindersEnabled(result.prayerRemindersEnabled);
-      setReminderError("");
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Sozlamalarni saqlab bo‘lmadi.");
+      setProfileMessage("Eslatma sozlamalari saqlandi.");
     } catch (error) {
-      console.error("Namoz eslatma sozlamasini saqlash xatosi:", error);
-
-      setReminderError(
-        error instanceof Error
-          ? error.message
-          : "Namoz eslatma sozlamasini saqlab bo'lmadi.",
-      );
+      setProfileError(error instanceof Error ? error.message : "Sozlamalarni saqlashda xatolik yuz berdi.");
     } finally {
-      setReminderSaving(false);
+      setProfileSaving(false);
     }
   }
 
-  // Soatni har soniyada yangilash.
+  // Brauzer ochilgach, vaqtni har soniyada yangilash.
   useEffect(() => {
     const updateClock = () => setClock(Date.now());
 
@@ -519,66 +306,56 @@ export default function Home() {
     return () => window.clearInterval(timer);
   }, []);
 
-  // Tasbeh va qurilma sozlamalarini localStorage'dan yuklash.
+  // Saqlangan sozlamalarni yuklash.
   useEffect(() => {
-    let savedCount: number | null = null;
-    let savedTarget: number | null = null;
-    let savedSound: boolean | null = null;
-    let savedVibration: boolean | null = null;
-
     try {
-      const countValue = localStorage.getItem("yetaklovchi-tasbih-count");
+      const savedCity = localStorage.getItem("yetaklovchi-prayer-city");
 
-      if (countValue !== null) {
-        const parsed = Number(countValue);
+      if (savedCity && cities.some((city) => city.value === savedCity)) {
+        setPrayerCity(savedCity);
+      }
+
+      const savedCount = localStorage.getItem("yetaklovchi-tasbih-count");
+
+      if (savedCount !== null) {
+        const parsed = Number(savedCount);
 
         if (Number.isFinite(parsed) && parsed >= 0) {
-          savedCount = parsed;
+          setCount(parsed);
         }
       }
 
-      const targetValue = localStorage.getItem("yetaklovchi-tasbih-target");
+      const savedTarget = localStorage.getItem("yetaklovchi-tasbih-target");
 
-      if (targetValue !== null) {
-        const parsed = Number(targetValue);
+      if (savedTarget !== null) {
+        const parsed = Number(savedTarget);
 
         if ([33, 99, 100, 999].includes(parsed)) {
-          savedTarget = parsed;
+          setTarget(parsed);
         }
       }
 
-      const soundValue = localStorage.getItem("yetaklovchi-sound");
+      const savedSound = localStorage.getItem("yetaklovchi-sound");
 
-      if (soundValue !== null) {
-        savedSound = soundValue === "true";
+      if (savedSound !== null) {
+        setSoundEnabled(savedSound === "true");
       }
 
-      const vibrationValue = localStorage.getItem("yetaklovchi-vibration");
+      const savedVibration = localStorage.getItem("yetaklovchi-vibration");
 
-      if (vibrationValue !== null) {
-        savedVibration = vibrationValue === "true";
+      if (savedVibration !== null) {
+        setVibrationEnabled(savedVibration === "true");
       }
     } catch {
-      // localStorage ishlamasa ham ilova ochiladi.
+      // Xotira ishlamasa ham ilova ochilishi kerak.
     }
-
-    const animationFrame = window.requestAnimationFrame(() => {
-      if (savedCount !== null) setCount(savedCount);
-      if (savedTarget !== null) setTarget(savedTarget);
-      if (savedSound !== null) setSoundEnabled(savedSound);
-      if (savedVibration !== null) setVibrationEnabled(savedVibration);
-    });
-
-    return () => window.cancelAnimationFrame(animationFrame);
   }, []);
 
   useEffect(() => {
-    if (!telegramSyncReady) return;
-
     try {
       localStorage.setItem("yetaklovchi-prayer-city", prayerCity);
     } catch {}
-  }, [prayerCity, telegramSyncReady]);
+  }, [prayerCity]);
 
   useEffect(() => {
     try {
@@ -607,60 +384,46 @@ export default function Home() {
     } catch {}
   }, [vibrationEnabled]);
 
-  // Namoz vaqtlarini faqat jadval ochilganda so'rash.
+  // Namoz vaqtlarini faqat jadval ochilganda so‘rash.
   useEffect(() => {
     if (!prayerOpen) return;
 
-    let cancelled = false;
     const controller = new AbortController();
 
     async function loadPrayerTimes() {
       setPrayerLoading(true);
       setPrayerError("");
-      setPrayerTimes(null);
 
       try {
-        const apiCity = getPrayerApiCity(prayerCity);
-
         const response = await fetch(
-          `/api/prayer-times?city=${encodeURIComponent(apiCity)}`,
+          `/api/prayer-times?city=${encodeURIComponent(prayerCity)}`,
           {
             cache: "no-store",
             signal: controller.signal,
           },
         );
 
-        const data = await readJson(response);
+        const data = await response.json();
 
         if (!response.ok) {
           throw new Error(
-            getApiError(data, "Namoz vaqtlarini olib bo'lmadi."),
+            data.error || "Namoz vaqtlarini olib bo‘lmadi.",
           );
         }
 
-        if (
-          !data ||
-          typeof data !== "object" ||
-          !("times" in data) ||
-          !data.times ||
-          typeof data.times !== "object"
-        ) {
-          throw new Error("Namoz vaqtlari noto'g'ri formatda qaytdi.");
+        setPrayerTimes(data.times);
+      } catch (error) {
+        if (error instanceof Error && error.name === "AbortError") {
+          return;
         }
 
-        if (!cancelled) {
-          setPrayerTimes(data.times as PrayerTimes);
-        }
-      } catch (error) {
-        if (
-          error instanceof Error &&
-          error.name !== "AbortError" &&
-          !cancelled
-        ) {
-          setPrayerError(error.message);
-        }
+        setPrayerError(
+          error instanceof Error
+            ? error.message
+            : "Namoz vaqtlarini olishda xatolik yuz berdi.",
+        );
       } finally {
-        if (!cancelled) {
+        if (!controller.signal.aborted) {
           setPrayerLoading(false);
         }
       }
@@ -668,12 +431,10 @@ export default function Home() {
 
     void loadPrayerTimes();
 
-    return () => {
-      cancelled = true;
-      controller.abort();
-    };
+    return () => controller.abort();
   }, [prayerOpen, prayerCity, retryKey]);
 
+  // Hozirgi vaqt Toshkent vaqt mintaqasida hisoblanadi.
   const now = useMemo(
     () => (clock > 0 ? getTashkentDate(clock) : null),
     [clock],
@@ -908,7 +669,10 @@ export default function Home() {
             </div>
 
             <div className="quick-grid">
-              <button className="quick-card" onClick={() => changeTab("duas")}>
+              <button
+                className="quick-card"
+                onClick={() => changeTab("duas")}
+              >
                 <span className="quick-icon">
                   <Heart size={21} />
                 </span>
@@ -929,7 +693,10 @@ export default function Home() {
                 <ChevronRight size={17} />
               </button>
 
-              <button className="quick-card" onClick={() => changeTab("daily")}>
+              <button
+                className="quick-card"
+                onClick={() => changeTab("daily")}
+              >
                 <span className="quick-icon">
                   <BookOpen size={21} />
                 </span>
@@ -1088,7 +855,9 @@ export default function Home() {
               ))}
             </select>
 
-            <p className="arabic-text tasbih-arabic">{selectedZikr.arabic}</p>
+            <p className="arabic-text tasbih-arabic">
+              {selectedZikr.arabic}
+            </p>
             <p className="tasbih-meaning">{selectedZikr.meaning}</p>
 
             <div className="tasbih-counter">
@@ -1114,7 +883,10 @@ export default function Home() {
                 : `${Math.max(target - count, 0)} ta zikr qoldi`}
             </p>
 
-            <button className="tasbih-main-button" onClick={incrementTasbih}>
+            <button
+              className="tasbih-main-button"
+              onClick={incrementTasbih}
+            >
               <Plus size={24} />
               Zikr qilish
             </button>
@@ -1250,6 +1022,66 @@ export default function Home() {
         </section>
       )}
 
+      {tab === "profile" && (
+        <section className="content-section profile-section">
+          <div className="section-heading">
+            <span className="section-kicker">SHAXSIY KABINET</span>
+            <h1>Profilim</h1>
+            <p>Telegram ma’lumotlaringiz va eslatma sozlamalari.</p>
+          </div>
+
+          {profileLoading && (
+            <div className="loading-state"><span className="loading-spinner" /><p>Profil yuklanmoqda...</p></div>
+          )}
+
+          {!profileLoading && profile && (
+            <>
+              <article className="feature-card profile-card">
+                <div className="profile-avatar"><UserRound size={30} /></div>
+                <div className="profile-identity">
+                  <h2>{[profile.first_name, profile.last_name].filter(Boolean).join(" ") || "Telegram foydalanuvchisi"}</h2>
+                  {profile.username ? <p>@{profile.username.replace(/^@/, "")}</p> : <p>Username ko‘rsatilmagan</p>}
+                </div>
+                <span className="profile-status">Telegram</span>
+              </article>
+
+              <article className="settings-card profile-details">
+                <h2>Shaxsiy ma’lumotlar</h2>
+                <div className="profile-detail-row"><span>Telegram ID</span><strong>{profile.telegram_id ?? "—"}</strong></div>
+                <div className="profile-detail-row"><span>Telefon raqami</span><strong>{profile.phone_number || "Bot orqali ulashilmagan"}</strong></div>
+                <div className="profile-detail-row"><span>Til</span><strong>{profile.language === "uz_cyr" ? "O‘zbekcha (кирилл)" : profile.language === "ru" ? "Русский" : "O‘zbekcha"}</strong></div>
+                {!profileSaved && <p className="small-note">Profil bazada hali saqlanmagan. Botda /start buyrug‘ini bosing va kerak bo‘lsa telefon raqamingizni ulashing.</p>}
+              </article>
+
+              <article className="settings-card profile-details">
+                <h2>Hudud va namoz vaqtlari</h2>
+                <label className="modal-label" htmlFor="profile-city">Shahar yoki hudud</label>
+                <select id="profile-city" className="city-select" value={prayerCity} disabled={profileSaving} onChange={(event) => void saveProfileCity(event.target.value)}>
+                  {cities.map((city) => <option key={city.value} value={city.value}>{city.label}</option>)}
+                </select>
+                <p className="small-note">Tanlangan shahar namoz vaqtlari uchun ishlatiladi.</p>
+              </article>
+
+              <article className="settings-card profile-details">
+                <h2>Eslatmalar</h2>
+                <label className="profile-toggle-row">
+                  <span><strong>Namoz eslatmalari</strong><small>Namoz vaqtlariga oid eslatmalar</small></span>
+                  <input type="checkbox" checked={prayerReminders} disabled={profileSaving} onChange={(event) => void saveReminderSettings(event.target.checked, dailyReminders)} />
+                </label>
+                <label className="profile-toggle-row">
+                  <span><strong>Kundalik eslatmalar</strong><small>Duolar va foydali eslatmalar</small></span>
+                  <input type="checkbox" checked={dailyReminders} disabled={profileSaving} onChange={(event) => void saveReminderSettings(prayerReminders, event.target.checked)} />
+                </label>
+                {profileSaving && <p className="small-note">Saqlanmoqda...</p>}
+              </article>
+            </>
+          )}
+
+          {profileError && <div className="error-state"><p>{profileError}</p><button className="secondary-action" onClick={() => changeTab("home")}>Bosh sahifaga qaytish</button></div>}
+          {profileMessage && <p className="small-note profile-success">{profileMessage}</p>}
+        </section>
+      )}
+
       <nav className="bottom-nav">
         <button
           className={tab === "home" ? "active" : ""}
@@ -1281,6 +1113,14 @@ export default function Home() {
         >
           <BookOpen size={21} />
           <span>Har kun</span>
+        </button>
+
+        <button
+          className={tab === "profile" ? "active" : ""}
+          onClick={() => changeTab("profile")}
+        >
+          <UserRound size={21} />
+          <span>Profil</span>
         </button>
       </nav>
 
@@ -1319,7 +1159,7 @@ export default function Home() {
               className="city-select"
               id="prayer-city"
               value={prayerCity}
-              onChange={(event) => handlePrayerCityChange(event.target.value)}
+              onChange={(event) => setPrayerCity(event.target.value)}
             >
               {cities.map((city) => (
                 <option key={city.value} value={city.value}>
@@ -1428,7 +1268,7 @@ export default function Home() {
               id="settings-city"
               className="city-select"
               value={prayerCity}
-              onChange={(event) => handlePrayerCityChange(event.target.value)}
+              onChange={(event) => setPrayerCity(event.target.value)}
             >
               {cities.map((city) => (
                 <option key={city.value} value={city.value}>
@@ -1436,50 +1276,6 @@ export default function Home() {
                 </option>
               ))}
             </select>
-
-            <div className="settings-inline">
-              <div>
-                <CalendarDays size={19} />
-                <span>Namoz eslatmalari</span>
-              </div>
-
-              <button
-                className={`toggle ${prayerRemindersEnabled ? "on" : ""}`}
-                type="button"
-                onClick={() =>
-                  void updatePrayerReminderSetting(!prayerRemindersEnabled)
-                }
-                aria-label="Namoz eslatmalarini yoqish yoki o‘chirish"
-                aria-pressed={prayerRemindersEnabled}
-                aria-busy={reminderSaving}
-                disabled={
-                  reminderLoading || reminderSaving || !reminderAvailable
-                }
-              >
-                <span />
-              </button>
-            </div>
-
-            {reminderLoading && (
-              <p className="small-note">Eslatma sozlamasi yuklanmoqda...</p>
-            )}
-
-            {!reminderLoading && !reminderAvailable && (
-              <p className="small-note">
-                Namoz eslatmalarini boshqarish uchun Telegram Mini App ichida
-                oching.
-              </p>
-            )}
-
-            {reminderSaving && (
-              <p className="small-note">Eslatma sozlamasi saqlanmoqda...</p>
-            )}
-
-            {reminderError && (
-              <div className="error-state" role="alert">
-                <p>{reminderError}</p>
-              </div>
-            )}
 
             <button
               className="feature-card settings-feature"
@@ -1499,9 +1295,8 @@ export default function Home() {
             </button>
 
             <p className="small-note">
-              Namoz eslatmalarini yoqish botdagi eslatma sozlamasini ham
-              yangilaydi. Botning o‘zi eslatmalarni yuborishi uchun uning
-              rejalashtirilgan vazifasi ham ishlayotgan bo‘lishi kerak.
+              Namoz bildirishnomalari va Telegram orqali eslatmalar keyingi
+              bosqichda ulanadi.
             </p>
           </section>
         </div>
