@@ -1,4 +1,5 @@
-﻿"use client";
+
+"use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -24,20 +25,33 @@ import {
 type Tab = "home" | "duas" | "tasbih" | "daily";
 type PrayerTimes = Record<string, string>;
 
+type TelegramProfile = {
+  telegram_id: number | string;
+  language?: string | null;
+  city?: string | null;
+  prayer_reminders?: boolean | null;
+  prayer_reminders_enabled?: boolean | null;
+  daily_reminders?: boolean | null;
+  first_name?: string | null;
+  last_name?: string | null;
+  username?: string | null;
+  phone_number?: string | null;
+};
+
 const cities = [
-  { value: "Tashkent", label: "Toshkent" },
-  { value: "Samarkand", label: "Samarqand" },
-  { value: "Bukhara", label: "Buxoro" },
-  { value: "Jizzax", label: "Jizzax" },
-  { value: "Navoiy", label: "Navoiy" },
-  { value: "Sirdaryo", label: "Sirdaryo" },
-  { value: "Andijan", label: "Andijon" },
-  { value: "Namangan", label: "Namangan" },
-  { value: "Fergana", label: "Farg‘ona" },
-  { value: "Karshi", label: "Qarshi" },
-  { value: "Nukus", label: "Nukus" },
-  { value: "Termez", label: "Termiz" },
-  { value: "Urgench", label: "Urganch" },
+  { value: "Tashkent", label: "Toshkent", apiCity: "Toshkent" },
+  { value: "Samarkand", label: "Samarqand", apiCity: "Samarqand" },
+  { value: "Bukhara", label: "Buxoro", apiCity: "Buxoro" },
+  { value: "Jizzax", label: "Jizzax", apiCity: "Jizzax" },
+  { value: "Navoiy", label: "Navoiy", apiCity: "Navoiy" },
+  { value: "Sirdaryo", label: "Sirdaryo", apiCity: "Sirdaryo" },
+  { value: "Andijan", label: "Andijon", apiCity: "Andijon" },
+  { value: "Namangan", label: "Namangan", apiCity: "Namangan" },
+  { value: "Fergana", label: "Farg‘ona", apiCity: "Farg‘ona" },
+  { value: "Karshi", label: "Qarshi", apiCity: "Qarshi" },
+  { value: "Nukus", label: "Nukus", apiCity: "Nukus" },
+  { value: "Termez", label: "Termiz", apiCity: "Termiz" },
+  { value: "Urgench", label: "Urganch", apiCity: "Urganch" },
 ];
 
 const prayerList = [
@@ -103,7 +117,14 @@ const dailyItems = [
 ];
 
 function isValidCity(city: unknown): city is string {
-  return typeof city === "string" && cities.some((item) => item.value === city);
+  return (
+    typeof city === "string" &&
+    cities.some((item) => item.value === city)
+  );
+}
+
+function getPrayerApiCity(city: string): string {
+  return cities.find((item) => item.value === city)?.apiCity ?? "Toshkent";
 }
 
 function getTashkentDate(timestamp: number): Date {
@@ -133,6 +154,27 @@ function getMinutes(value?: string): number {
   return hours * 60 + minutes;
 }
 
+async function readJson(response: Response): Promise<unknown> {
+  try {
+    return await response.json();
+  } catch {
+    return null;
+  }
+}
+
+function getApiError(data: unknown, fallback: string): string {
+  if (
+    data &&
+    typeof data === "object" &&
+    "error" in data &&
+    typeof data.error === "string"
+  ) {
+    return data.error;
+  }
+
+  return fallback;
+}
+
 export default function Home() {
   const [tab, setTab] = useState<Tab>("home");
   const [count, setCount] = useState(0);
@@ -145,17 +187,16 @@ export default function Home() {
   const [prayerOpen, setPrayerOpen] = useState(false);
   const [prayerCity, setPrayerCity] = useState("Tashkent");
   const [telegramSyncReady, setTelegramSyncReady] = useState(false);
-  const [cityChangeVersion, setCityChangeVersion] = useState(0);
   const [prayerTimes, setPrayerTimes] = useState<PrayerTimes | null>(null);
   const [prayerLoading, setPrayerLoading] = useState(false);
   const [prayerError, setPrayerError] = useState("");
   const [retryKey, setRetryKey] = useState(0);
+
   const telegramInitDataRef = useRef<string | null>(null);
   const profileCityRef = useRef<string | null>(null);
   const cityChangeVersionRef = useRef(0);
   const handledCityChangeVersionRef = useRef(0);
 
-  // Soat boshlang‘ich renderda hisoblanmaydi.
   const [clock, setClock] = useState(0);
 
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -167,6 +208,7 @@ export default function Home() {
   const [reminderAvailable, setReminderAvailable] = useState(false);
   const [reminderError, setReminderError] = useState("");
 
+  // Telegram profilini va avval saqlangan shaharni yuklash.
   useEffect(() => {
     let cancelled = false;
 
@@ -185,6 +227,7 @@ export default function Home() {
         if (cancelled) return;
 
         WebApp.ready();
+
         const initData = WebApp.initData;
 
         if (!initData) {
@@ -193,6 +236,8 @@ export default function Home() {
           }
 
           setTelegramSyncReady(true);
+          setReminderAvailable(false);
+          setReminderLoading(false);
           return;
         }
 
@@ -206,15 +251,28 @@ export default function Home() {
           cache: "no-store",
         });
 
+        const result = await readJson(response);
+
         if (!response.ok) {
-          throw new Error("Profilni yuklab bo'lmadi.");
+          throw new Error(
+            getApiError(result, "Profilni yuklab bo'lmadi."),
+          );
         }
 
-        const result = await response.json();
+        if (
+          !result ||
+          typeof result !== "object" ||
+          !("profile" in result)
+        ) {
+          throw new Error("Profil ma'lumotlari noto'g'ri qaytdi.");
+        }
+
+        const profile = (result as { profile: TelegramProfile }).profile;
 
         if (cancelled) return;
 
-        const city: unknown = result.profile?.city;
+        const city: unknown = profile?.city;
+
         profileCityRef.current = isValidCity(city) ? city : null;
 
         if (cityChangeVersionRef.current === 0) {
@@ -249,23 +307,24 @@ export default function Home() {
     };
   }, []);
 
+  // Namoz eslatmasi holatini bazadan olish.
   useEffect(() => {
     if (!telegramSyncReady) return;
+
+    const initData = telegramInitDataRef.current;
+
+    if (!initData) {
+      setReminderAvailable(false);
+      setReminderLoading(false);
+      return;
+    }
 
     let cancelled = false;
     const controller = new AbortController();
 
     async function loadPrayerReminderSetting() {
       try {
-        const initData = telegramInitDataRef.current;
-
-        if (!initData) {
-          setReminderLoading(false);
-          return;
-        }
-
-        telegramInitDataRef.current = initData;
-        setReminderAvailable(true);
+        setReminderLoading(true);
 
         const response = await fetch("/api/settings", {
           method: "GET",
@@ -275,17 +334,16 @@ export default function Home() {
           cache: "no-store",
           signal: controller.signal,
         });
-        const result: unknown = await response.json();
+
+        const result = await readJson(response);
 
         if (!response.ok) {
-          const message =
-            result &&
-            typeof result === "object" &&
-            "error" in result &&
-            typeof result.error === "string"
-              ? result.error
-              : "Namoz eslatma holatini yuklab bo'lmadi.";
-          throw new Error(message);
+          throw new Error(
+            getApiError(
+              result,
+              "Namoz eslatma holatini yuklab bo'lmadi.",
+            ),
+          );
         }
 
         if (
@@ -299,19 +357,18 @@ export default function Home() {
 
         if (!cancelled) {
           setPrayerRemindersEnabled(result.prayerRemindersEnabled);
+          setReminderAvailable(true);
           setReminderError("");
         }
       } catch (error) {
-        if (error instanceof Error && error.name !== "AbortError") {
+        if (
+          error instanceof Error &&
+          error.name !== "AbortError" &&
+          !cancelled
+        ) {
           console.error("Namoz eslatma holatini yuklash xatosi:", error);
-
-          if (!cancelled) {
-            setReminderError(
-              error instanceof Error
-                ? error.message
-                : "Namoz eslatma holatini yuklab bo'lmadi.",
-            );
-          }
+          setReminderError(error.message);
+          setReminderAvailable(true);
         }
       } finally {
         if (!cancelled) {
@@ -328,10 +385,12 @@ export default function Home() {
     };
   }, [telegramSyncReady]);
 
+  // Tanlangan shaharni Mini App profili bilan sinxronlashtirish.
   useEffect(() => {
     if (
       !telegramSyncReady ||
-      cityChangeVersion === handledCityChangeVersionRef.current
+      cityChangeVersionRef.current === 0 ||
+      cityChangeVersionRef.current === handledCityChangeVersionRef.current
     ) {
       return;
     }
@@ -340,48 +399,57 @@ export default function Home() {
 
     if (!initData) return;
 
-    handledCityChangeVersionRef.current = cityChangeVersion;
+    const version = cityChangeVersionRef.current;
+    const cityToSave = prayerCity;
 
-    if (prayerCity === profileCityRef.current) return;
+    handledCityChangeVersionRef.current = version;
+
+    if (cityToSave === profileCityRef.current) return;
 
     const controller = new AbortController();
 
-    async function saveCity(verifiedInitData: string) {
+    async function saveCity() {
       try {
         const response = await fetch("/api/profile", {
           method: "PATCH",
           headers: {
             "Content-Type": "application/json",
-            "x-telegram-init-data": verifiedInitData,
+            "x-telegram-init-data": initData,
           },
-          body: JSON.stringify({ city: prayerCity }),
+          body: JSON.stringify({ city: cityToSave }),
           signal: controller.signal,
         });
 
+        const result = await readJson(response);
+
         if (!response.ok) {
-          throw new Error("Shaharni bazaga saqlab bo'lmadi.");
+          throw new Error(
+            getApiError(result, "Shaharni bazaga saqlab bo'lmadi."),
+          );
         }
 
         if (!controller.signal.aborted) {
-          profileCityRef.current = prayerCity;
+          profileCityRef.current = cityToSave;
         }
       } catch (error) {
-        if (error instanceof Error && error.name !== "AbortError") {
+        if (
+          error instanceof Error &&
+          error.name !== "AbortError"
+        ) {
           console.error("Shaharni saqlash xatosi:", error);
         }
       }
     }
 
-    void saveCity(initData);
+    void saveCity();
 
     return () => controller.abort();
-  }, [cityChangeVersion, prayerCity, telegramSyncReady]);
+  }, [prayerCity, telegramSyncReady]);
 
   function handlePrayerCityChange(city: string) {
     if (city === prayerCity) return;
 
     cityChangeVersionRef.current += 1;
-    setCityChangeVersion(cityChangeVersionRef.current);
     setPrayerCity(city);
   }
 
@@ -400,19 +468,20 @@ export default function Home() {
           "Content-Type": "application/json",
           "x-telegram-init-data": initData,
         },
-        body: JSON.stringify({ prayerRemindersEnabled: enabled }),
+        body: JSON.stringify({
+          prayerRemindersEnabled: enabled,
+        }),
       });
-      const result: unknown = await response.json();
+
+      const result = await readJson(response);
 
       if (!response.ok) {
-        const message =
-          result &&
-          typeof result === "object" &&
-          "error" in result &&
-          typeof result.error === "string"
-            ? result.error
-            : "Namoz eslatma sozlamasini saqlab bo'lmadi.";
-        throw new Error(message);
+        throw new Error(
+          getApiError(
+            result,
+            "Namoz eslatma sozlamasini saqlab bo'lmadi.",
+          ),
+        );
       }
 
       if (
@@ -425,8 +494,10 @@ export default function Home() {
       }
 
       setPrayerRemindersEnabled(result.prayerRemindersEnabled);
+      setReminderError("");
     } catch (error) {
       console.error("Namoz eslatma sozlamasini saqlash xatosi:", error);
+
       setReminderError(
         error instanceof Error
           ? error.message
@@ -437,7 +508,7 @@ export default function Home() {
     }
   }
 
-  // Brauzer ochilgach, vaqtni har soniyada yangilash.
+  // Soatni har soniyada yangilash.
   useEffect(() => {
     const updateClock = () => setClock(Date.now());
 
@@ -448,7 +519,7 @@ export default function Home() {
     return () => window.clearInterval(timer);
   }, []);
 
-  // Saqlangan sozlamalarni yuklash.
+  // Tasbeh va qurilma sozlamalarini localStorage'dan yuklash.
   useEffect(() => {
     let savedCount: number | null = null;
     let savedTarget: number | null = null;
@@ -488,7 +559,7 @@ export default function Home() {
         savedVibration = vibrationValue === "true";
       }
     } catch {
-      // Xotira ishlamasa ham ilova ochilishi kerak.
+      // localStorage ishlamasa ham ilova ochiladi.
     }
 
     const animationFrame = window.requestAnimationFrame(() => {
@@ -536,46 +607,60 @@ export default function Home() {
     } catch {}
   }, [vibrationEnabled]);
 
-  // Namoz vaqtlarini faqat jadval ochilganda so‘rash.
+  // Namoz vaqtlarini faqat jadval ochilganda so'rash.
   useEffect(() => {
     if (!prayerOpen) return;
 
+    let cancelled = false;
     const controller = new AbortController();
 
     async function loadPrayerTimes() {
       setPrayerLoading(true);
       setPrayerError("");
+      setPrayerTimes(null);
 
       try {
+        const apiCity = getPrayerApiCity(prayerCity);
+
         const response = await fetch(
-          `/api/prayer-times?city=${encodeURIComponent(prayerCity)}`,
+          `/api/prayer-times?city=${encodeURIComponent(apiCity)}`,
           {
             cache: "no-store",
             signal: controller.signal,
           },
         );
 
-        const data = await response.json();
+        const data = await readJson(response);
 
         if (!response.ok) {
           throw new Error(
-            data.error || "Namoz vaqtlarini olib bo‘lmadi.",
+            getApiError(data, "Namoz vaqtlarini olib bo'lmadi."),
           );
         }
 
-        setPrayerTimes(data.times);
-      } catch (error) {
-        if (error instanceof Error && error.name === "AbortError") {
-          return;
+        if (
+          !data ||
+          typeof data !== "object" ||
+          !("times" in data) ||
+          !data.times ||
+          typeof data.times !== "object"
+        ) {
+          throw new Error("Namoz vaqtlari noto'g'ri formatda qaytdi.");
         }
 
-        setPrayerError(
-          error instanceof Error
-            ? error.message
-            : "Namoz vaqtlarini olishda xatolik yuz berdi.",
-        );
+        if (!cancelled) {
+          setPrayerTimes(data.times as PrayerTimes);
+        }
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          error.name !== "AbortError" &&
+          !cancelled
+        ) {
+          setPrayerError(error.message);
+        }
       } finally {
-        if (!controller.signal.aborted) {
+        if (!cancelled) {
           setPrayerLoading(false);
         }
       }
@@ -583,10 +668,12 @@ export default function Home() {
 
     void loadPrayerTimes();
 
-    return () => controller.abort();
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
   }, [prayerOpen, prayerCity, retryKey]);
 
-  // Hozirgi vaqt Toshkent vaqt mintaqasida hisoblanadi.
   const now = useMemo(
     () => (clock > 0 ? getTashkentDate(clock) : null),
     [clock],
@@ -821,10 +908,7 @@ export default function Home() {
             </div>
 
             <div className="quick-grid">
-              <button
-                className="quick-card"
-                onClick={() => changeTab("duas")}
-              >
+              <button className="quick-card" onClick={() => changeTab("duas")}>
                 <span className="quick-icon">
                   <Heart size={21} />
                 </span>
@@ -845,10 +929,7 @@ export default function Home() {
                 <ChevronRight size={17} />
               </button>
 
-              <button
-                className="quick-card"
-                onClick={() => changeTab("daily")}
-              >
+              <button className="quick-card" onClick={() => changeTab("daily")}>
                 <span className="quick-icon">
                   <BookOpen size={21} />
                 </span>
@@ -1007,9 +1088,7 @@ export default function Home() {
               ))}
             </select>
 
-            <p className="arabic-text tasbih-arabic">
-              {selectedZikr.arabic}
-            </p>
+            <p className="arabic-text tasbih-arabic">{selectedZikr.arabic}</p>
             <p className="tasbih-meaning">{selectedZikr.meaning}</p>
 
             <div className="tasbih-counter">
@@ -1035,10 +1114,7 @@ export default function Home() {
                 : `${Math.max(target - count, 0)} ta zikr qoldi`}
             </p>
 
-            <button
-              className="tasbih-main-button"
-              onClick={incrementTasbih}
-            >
+            <button className="tasbih-main-button" onClick={incrementTasbih}>
               <Plus size={24} />
               Zikr qilish
             </button>
@@ -1423,8 +1499,9 @@ export default function Home() {
             </button>
 
             <p className="small-note">
-              Namoz bildirishnomalari va Telegram orqali eslatmalar keyingi
-              bosqichda ulanadi.
+              Namoz eslatmalarini yoqish botdagi eslatma sozlamasini ham
+              yangilaydi. Botning o‘zi eslatmalarni yuborishi uchun uning
+              rejalashtirilgan vazifasi ham ishlayotgan bo‘lishi kerak.
             </p>
           </section>
         </div>
