@@ -20,21 +20,18 @@ interface TelegramInitDataUser {
 const MAX_AUTH_AGE_SECONDS = 24 * 60 * 60;
 const MAX_FUTURE_SKEW_SECONDS = 60;
 
-/**
- * Telegram Mini App initData ma'lumotlarini tekshiradi.
- * Ma'lumot haqiqiy bo'lsa foydalanuvchini, aks holda null qaytaradi.
- */
 export function verifyTelegramInitData(
   initData: string
 ): TelegramWebAppUser | null {
   try {
     const botToken = process.env.TELEGRAM_BOT_TOKEN;
 
-    if (!botToken || !initData || initData.length > 16_384) {
+    if (!botToken || !initData || initData.length > 16384) {
       return null;
     }
 
     const params = new URLSearchParams(initData);
+
     const receivedHash = params.get("hash");
     const userString = params.get("user");
     const authDateString = params.get("auth_date");
@@ -43,7 +40,6 @@ export function verifyTelegramInitData(
       return null;
     }
 
-    // Telegram hash qiymati 64 ta hexadecimal belgidan iborat.
     if (!/^[a-f0-9]{64}$/i.test(receivedHash)) {
       return null;
     }
@@ -56,7 +52,6 @@ export function verifyTelegramInitData(
 
     const now = Math.floor(Date.now() / 1000);
 
-    // Kelajakdagi yoki muddati o'tgan initData'ni qabul qilmaymiz.
     if (
       authDate > now + MAX_FUTURE_SKEW_SECONDS ||
       now - authDate > MAX_AUTH_AGE_SECONDS
@@ -64,7 +59,6 @@ export function verifyTelegramInitData(
       return null;
     }
 
-    // Telegram tekshiruvida hash parametrining o'zi kiritilmaydi.
     params.delete("hash");
 
     const dataCheckString = Array.from(params.entries())
@@ -72,7 +66,6 @@ export function verifyTelegramInitData(
       .map(([key, value]) => `${key}=${value}`)
       .join("\n");
 
-    // Telegram Web Apps rasmiy HMAC-SHA-256 tekshiruvi.
     const secretKey = createHmac("sha256", "WebAppData")
       .update(botToken)
       .digest();
@@ -94,8 +87,8 @@ export function verifyTelegramInitData(
 
     if (
       !parsedUser ||
-      !Number.isSafeInteger(parsedUser.id) ||
       typeof parsedUser.id !== "number" ||
+      !Number.isSafeInteger(parsedUser.id) ||
       parsedUser.id <= 0 ||
       typeof parsedUser.first_name !== "string"
     ) {
