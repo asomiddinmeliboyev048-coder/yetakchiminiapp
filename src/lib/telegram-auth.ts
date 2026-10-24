@@ -1,8 +1,21 @@
 
 import "server-only";
+
 import { createHmac, timingSafeEqual } from "node:crypto";
 
-export function verifyTelegramInitData(initData: string) {
+export type TelegramWebAppUser = {
+  id: number;
+  first_name: string;
+  last_name?: string;
+  username?: string;
+};
+
+const MAX_AUTH_AGE_SECONDS = 24 * 60 * 60;
+const CLOCK_SKEW_SECONDS = 60;
+
+export function verifyTelegramInitData(
+  initData: string
+): TelegramWebAppUser | null {
   const botToken = process.env.TELEGRAM_BOT_TOKEN;
 
   if (!botToken || !initData) {
@@ -11,48 +24,58 @@ export function verifyTelegramInitData(initData: string) {
 
   try {
     const params = new URLSearchParams(initData);
+
     const receivedHash = params.get("hash");
-    const authDate = Number(params.get("auth_date"));
+    const authDateValue = params.get("auth_date");
     const userValue = params.get("user");
 
     if (
       !receivedHash ||
       !/^[a-f0-9]{64}$/i.test(receivedHash) ||
-      !userValue ||
-      !Number.isSafeInteger(authDate) ||
-      authDate <= 0
+      !authDateValue ||
+      !userValue
     ) {
       return null;
     }
 
-    // Telegram initData muddati: 24 soat
+    const authDate = Number(authDateValue);
+
+    if (!Number.isSafeInteger(authDate) || authDate <= 0) {
+      return null;
+    }
+
     const now = Math.floor(Date.now() / 1000);
 
-    if (authDate > now + 60 || now - authDate > 86400) {
+    if (
+      authDate > now + CLOCK_SKEW_SECONDS ||
+      now - authDate > MAX_AUTH_AGE_SECONDS
+    ) {
       return null;
     }
 
     params.delete("hash");
 
     const dataCheckString = [...params.entries()]
-      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .sort(([keyA], [keyB]) =>
+        keyA < keyB ? -1 : keyA > keyB ? 1 : 0
+      )
       .map(([key, value]) => `${key}=${value}`)
       .join("\n");
 
-    const secretKey = createHmac("sha256", botToken)
-      .update("WebAppData")
+    const secretKey = createHmac("sha256", "WebAppData")
+      .update(botToken)
       .digest();
 
     const calculatedHash = createHmac("sha256", secretKey)
       .update(dataCheckString)
       .digest("hex");
 
-    const received = Buffer.from(receivedHash, "hex");
-    const calculated = Buffer.from(calculatedHash, "hex");
+    const receivedBuffer = Buffer.from(receivedHash, "hex");
+    const calculatedBuffer = Buffer.from(calculatedHash, "hex");
 
     if (
-      received.length !== calculated.length ||
-      !timingSafeEqual(received, calculated)
+      receivedBuffer.length !== calculatedBuffer.length ||
+      !timingSafeEqual(receivedBuffer, calculatedBuffer)
     ) {
       return null;
     }
@@ -60,8 +83,8 @@ export function verifyTelegramInitData(initData: string) {
     const parsedUser: unknown = JSON.parse(userValue);
 
     if (
-      !parsedUser ||
       typeof parsedUser !== "object" ||
+      parsedUser === null ||
       Array.isArray(parsedUser)
     ) {
       return null;
@@ -72,19 +95,21 @@ export function verifyTelegramInitData(initData: string) {
     if (
       typeof user.id !== "number" ||
       !Number.isSafeInteger(user.id) ||
-      user.id <= 0
+      user.id <= 0 ||
+      typeof user.first_name !== "string"
     ) {
       return null;
     }
 
     return {
       id: user.id,
-      first_name: typeof user.first_name === "string"
-        ? user.first_name
-        : "",
-      username: typeof user.username === "string"
-        ? user.username
-        : undefined,
+      first_name: user.first_name,
+      ...(typeof user.last_name === "string"
+        ? { last_name: user.last_name }
+        : {}),
+      ...(typeof user.username === "string"
+        ? { username: user.username }
+        : {}),
     };
   } catch {
     return null;
