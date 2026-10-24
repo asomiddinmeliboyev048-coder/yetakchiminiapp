@@ -3,27 +3,6 @@ import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import { verifyTelegramInitData } from "@/lib/telegram-auth";
 
-export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
-
-const ALLOWED_CITIES = [
-  "Toshkent",
-  "Samarqand",
-  "Buxoro",
-  "Jizzax",
-  "Navoiy",
-  "Sirdaryo",
-  "Andijon",
-  "Namangan",
-  "Farg‘ona",
-  "Qarshi",
-  "Nukus",
-  "Termiz",
-  "Urganch",
-] as const;
-
-const ALLOWED_LANGUAGES = ["uz", "uz_cyr"] as const;
-
 function getTelegramUser(request: NextRequest) {
   const initData = request.headers.get("x-telegram-init-data");
 
@@ -34,232 +13,183 @@ function getTelegramUser(request: NextRequest) {
   return verifyTelegramInitData(initData);
 }
 
-function isValidCity(value: unknown): value is (typeof ALLOWED_CITIES)[number] {
-  return (
-    typeof value === "string" &&
-    ALLOWED_CITIES.some((city) => city === value)
-  );
-}
-
-function isValidLanguage(
-  value: unknown
-): value is (typeof ALLOWED_LANGUAGES)[number] {
-  return (
-    typeof value === "string" &&
-    ALLOWED_LANGUAGES.some((language) => language === value)
-  );
-}
-
-function handleDatabaseError(error: unknown) {
-  console.error("Profile API database error:", error);
-
-  return NextResponse.json(
-    { error: "Profil ma’lumotlarini saqlashda xatolik yuz berdi." },
-    { status: 500 }
-  );
-}
-
-async function ensureUserExists(telegramId: number) {
-  const { data: existingUser, error: selectError } = await supabaseAdmin
-    .from("users")
-    .select("telegram_id")
-    .eq("telegram_id", telegramId)
-    .maybeSingle();
-
-  if (selectError) {
-    throw selectError;
-  }
-
-  if (existingUser) {
-    return;
-  }
-
-  const { error: insertError } = await supabaseAdmin
-    .from("users")
-    .insert({
-      telegram_id: telegramId,
-      language: "uz",
-      prayer_reminders: false,
-      prayer_reminders_enabled: false,
-      daily_reminders: false,
-    });
-
-  if (insertError) {
-    // Parallel so'rov sababli foydalanuvchi oldindan yaratilgan
-    // bo'lishi mumkin. Bunday vaziyatda mavjud qatorni tekshiramiz.
-    const { data: userAfterInsert, error: retryError } =
-      await supabaseAdmin
-        .from("users")
-        .select("telegram_id")
-        .eq("telegram_id", telegramId)
-        .maybeSingle();
-
-    if (retryError) {
-      throw retryError;
-    }
-
-    if (!userAfterInsert) {
-      throw insertError;
-    }
-  }
+function jsonError(message: string, status: number) {
+  return NextResponse.json({ error: message }, { status });
 }
 
 export async function GET(request: NextRequest) {
-  const telegramUser = getTelegramUser(request);
-
-  if (!telegramUser) {
-    return NextResponse.json(
-      { error: "Telegram foydalanuvchisini tekshirish muvaffaqiyatsiz." },
-      { status: 401 }
-    );
-  }
-
   try {
-    await ensureUserExists(telegramUser.id);
+    const telegramUser = getTelegramUser(request);
 
-    const { data: profile, error } = await supabaseAdmin
-      .from("users")
-      .select(
-        [
-          "telegram_id",
-          "language",
-          "city",
-          "prayer_reminders",
-          "prayer_reminders_enabled",
-          "daily_reminders",
-          "first_name",
-          "last_name",
-          "username",
-          "phone_number",
-          "created_at",
-          "updated_at",
-        ].join(", ")
-      )
-      .eq("telegram_id", telegramUser.id)
-      .single();
-
-    if (error) {
-      return handleDatabaseError(error);
+    if (!telegramUser) {
+      return jsonError("Telegram foydalanuvchisi tasdiqlanmadi.", 401);
     }
 
+    const { data, error } = await supabaseAdmin
+      .from("users")
+      .select(
+        "telegram_id, first_name, last_name, username, phone_number, language, city, prayer_reminders, prayer_reminders_enabled, daily_reminders",
+      )
+      .eq("telegram_id", telegramUser.id)
+      .maybeSingle();
+
+    if (error) {
+      console.error("Profile GET Supabase xatosi:", error.message);
+      return jsonError("Profil ma’lumotlarini yuklab bo‘lmadi.", 500);
+    }
+
+    if (!data) {
+      return NextResponse.json({
+        profile: {
+          telegram_id: telegramUser.id,
+          first_name: telegramUser.first_name ?? "",
+          last_name: telegramUser.last_name ?? "",
+          username: telegramUser.username ?? null,
+          phone_number: null,
+          language: "uz",
+          city: null,
+          prayer_reminders: false,
+          prayer_reminders_enabled: false,
+          daily_reminders: false,
+        },
+        profileSaved: false,
+      });
+    }
+
+    // Telegram'dan kelgan ism va username'ni ko'rsatamiz.
+    // Botda saqlangan telefon raqamini o'zgartirmaymiz.
+    const profile = {
+      ...data,
+      first_name: telegramUser.first_name || data.first_name || "",
+      last_name: telegramUser.last_name || data.last_name || "",
+      username: telegramUser.username || data.username || null,
+    };
+
     return NextResponse.json({
-      profile: {
-        ...profile,
-        first_name: profile.first_name ?? telegramUser.first_name,
-        last_name:
-          profile.last_name ??
-          telegramUser.last_name ??
-          null,
-        username:
-          profile.username ??
-          telegramUser.username ??
-          null,
-      },
+      profile,
+      profileSaved: true,
     });
   } catch (error) {
-    return handleDatabaseError(error);
+    console.error("Profile GET xatosi:", error);
+    return jsonError("Profilni olishda kutilmagan xatolik yuz berdi.", 500);
   }
 }
 
 export async function PATCH(request: NextRequest) {
-  const telegramUser = getTelegramUser(request);
-
-  if (!telegramUser) {
-    return NextResponse.json(
-      { error: "Telegram foydalanuvchisini tekshirish muvaffaqiyatsiz." },
-      { status: 401 }
-    );
-  }
-
-  let body: Record<string, unknown>;
-
   try {
-    const parsedBody: unknown = await request.json();
+    const telegramUser = getTelegramUser(request);
 
-    if (
-      typeof parsedBody !== "object" ||
-      parsedBody === null ||
-      Array.isArray(parsedBody)
-    ) {
-      return NextResponse.json(
-        { error: "So‘rov ma’lumotlari noto‘g‘ri." },
-        { status: 400 }
-      );
+    if (!telegramUser) {
+      return jsonError("Telegram foydalanuvchisi tasdiqlanmadi.", 401);
     }
 
-    body = parsedBody as Record<string, unknown>;
-  } catch {
-    return NextResponse.json(
-      { error: "JSON ma’lumotlarini o‘qib bo‘lmadi." },
-      { status: 400 }
-    );
-  }
+    let body: unknown;
 
-  const updates: Record<string, string> = {};
-
-  if (Object.prototype.hasOwnProperty.call(body, "city")) {
-    if (!isValidCity(body.city)) {
-      return NextResponse.json(
-        { error: "Tanlangan shahar ro‘yxatda mavjud emas." },
-        { status: 400 }
-      );
+    try {
+      body = await request.json();
+    } catch {
+      return jsonError("So‘rov ma’lumotlari noto‘g‘ri.", 400);
     }
 
-    updates.city = body.city;
-  }
-
-  if (Object.prototype.hasOwnProperty.call(body, "language")) {
-    if (!isValidLanguage(body.language)) {
-      return NextResponse.json(
-        { error: "Tanlangan til qo‘llab-quvvatlanmaydi." },
-        { status: 400 }
-      );
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      return jsonError("Ma’lumotlar formati noto‘g‘ri.", 400);
     }
 
-    updates.language = body.language;
-  }
+    const input = body as Record<string, unknown>;
+    const updates: Record<string, unknown> = {
+      updated_at: new Date().toISOString(),
+    };
 
-  if (Object.keys(updates).length === 0) {
-    return NextResponse.json(
-      { error: "Yangilash uchun shahar yoki til yuborilishi kerak." },
-      { status: 400 }
-    );
-  }
+    if ("city" in input) {
+      if (typeof input.city !== "string" || !input.city.trim()) {
+        return jsonError("Shahar nomi noto‘g‘ri.", 400);
+      }
 
-  try {
-    await ensureUserExists(telegramUser.id);
+      const allowedCities = [
+        "Tashkent",
+        "Samarkand",
+        "Bukhara",
+        "Jizzax",
+        "Navoiy",
+        "Sirdaryo",
+        "Andijan",
+        "Namangan",
+        "Fergana",
+        "Karshi",
+        "Nukus",
+        "Termez",
+        "Urgench",
+      ];
 
-    const { data: profile, error } = await supabaseAdmin
+      if (!allowedCities.includes(input.city)) {
+        return jsonError("Bu shahar ro‘yxatda mavjud emas.", 400);
+      }
+
+      updates.city = input.city;
+    }
+
+    if ("language" in input) {
+      if (
+        typeof input.language !== "string" ||
+        !["uz", "uz_cyr", "ru"].includes(input.language)
+      ) {
+        return jsonError("Tanlangan til qo‘llab-quvvatlanmaydi.", 400);
+      }
+
+      updates.language = input.language;
+    }
+
+    if (Object.keys(updates).length === 1) {
+      return jsonError("Saqlash uchun o‘zgarish berilmadi.", 400);
+    }
+
+    const { data: existingUser, error: lookupError } = await supabaseAdmin
       .from("users")
-      .update({
-        ...updates,
-        updated_at: new Date().toISOString(),
-      })
+      .select("telegram_id")
       .eq("telegram_id", telegramUser.id)
-      .select(
-        [
-          "telegram_id",
-          "language",
-          "city",
-          "prayer_reminders",
-          "prayer_reminders_enabled",
-          "daily_reminders",
-          "first_name",
-          "last_name",
-          "username",
-          "phone_number",
-          "created_at",
-          "updated_at",
-        ].join(", ")
-      )
-      .single();
+      .maybeSingle();
 
-    if (error) {
-      return handleDatabaseError(error);
+    if (lookupError) {
+      console.error("Profile lookup xatosi:", lookupError.message);
+      return jsonError("Profilni tekshirib bo‘lmadi.", 500);
     }
 
-    return NextResponse.json({ profile });
+    if (!existingUser) {
+      return jsonError(
+        "Profil topilmadi. Telegram botida /start buyrug‘ini bosing va qayta urinib ko‘ring.",
+        404,
+      );
+    }
+
+    const { error: updateError } = await supabaseAdmin
+      .from("users")
+      .update(updates)
+      .eq("telegram_id", telegramUser.id);
+
+    if (updateError) {
+      console.error("Profile PATCH Supabase xatosi:", updateError.message);
+      return jsonError("Profilni saqlab bo‘lmadi.", 500);
+    }
+
+    const { data: updatedProfile, error: fetchError } = await supabaseAdmin
+      .from("users")
+      .select(
+        "telegram_id, first_name, last_name, username, phone_number, language, city, prayer_reminders, prayer_reminders_enabled, daily_reminders",
+      )
+      .eq("telegram_id", telegramUser.id)
+      .maybeSingle();
+
+    if (fetchError) {
+      console.error("Updated profile fetch xatosi:", fetchError.message);
+      return jsonError("Saqlangan profilni qayta olishda xatolik.", 500);
+    }
+
+    return NextResponse.json({
+      success: true,
+      profile: updatedProfile,
+    });
   } catch (error) {
-    return handleDatabaseError(error);
+    console.error("Profile PATCH xatosi:", error);
+    return jsonError("Profilni saqlashda kutilmagan xatolik yuz berdi.", 500);
   }
 }
