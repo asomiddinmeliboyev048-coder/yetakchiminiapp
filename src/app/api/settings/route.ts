@@ -3,12 +3,28 @@ import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import { verifyTelegramInitData } from "@/lib/telegram-auth";
 
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
 function getTelegramUser(request: NextRequest) {
   const initData = request.headers.get("x-telegram-init-data");
 
-  if (!initData) return null;
+  if (!initData) {
+    return null;
+  }
 
   return verifyTelegramInitData(initData);
+}
+
+function getReminderState(profile: {
+  prayer_reminders_enabled?: boolean | null;
+  prayer_reminders?: boolean | null;
+}) {
+  // Yangi ustun asosiy hisoblanadi; eski ustun esa
+  // avvalgi bot kodi bilan moslik uchun saqlanadi.
+  return profile.prayer_reminders_enabled === true ||
+    (profile.prayer_reminders_enabled == null &&
+      profile.prayer_reminders === true);
 }
 
 export async function GET(request: NextRequest) {
@@ -16,35 +32,37 @@ export async function GET(request: NextRequest) {
 
   if (!telegramUser) {
     return NextResponse.json(
-      { error: "Telegram foydalanuvchisi tasdiqlanmadi." },
+      { error: "Telegram foydalanuvchisini tekshirish muvaffaqiyatsiz." },
       { status: 401 }
     );
   }
 
-  const { data, error } = await supabaseAdmin
+  const { data: profile, error } = await supabaseAdmin
     .from("users")
-    .select("prayer_reminders_enabled")
+    .select("prayer_reminders_enabled, prayer_reminders")
     .eq("telegram_id", telegramUser.id)
     .maybeSingle();
 
   if (error) {
-    console.error("Eslatma sozlamasini o'qish xatosi:", error);
+    console.error("Settings GET error:", error);
 
     return NextResponse.json(
-      { error: "Eslatma sozlamasini o'qib bo'lmadi." },
+      { error: "Eslatma sozlamalarini olishda xatolik yuz berdi." },
       { status: 500 }
     );
   }
 
-  if (!data) {
+  if (!profile) {
     return NextResponse.json(
-      { error: "Profil topilmadi. Avval profilni yuklang." },
+      { error: "Foydalanuvchi profili topilmadi. Avval botda /start bosing." },
       { status: 404 }
     );
   }
 
+  const prayerRemindersEnabled = getReminderState(profile);
+
   return NextResponse.json({
-    prayerRemindersEnabled: data.prayer_reminders_enabled,
+    prayerRemindersEnabled,
   });
 }
 
@@ -53,7 +71,7 @@ export async function PATCH(request: NextRequest) {
 
   if (!telegramUser) {
     return NextResponse.json(
-      { error: "Telegram foydalanuvchisi tasdiqlanmadi." },
+      { error: "Telegram foydalanuvchisini tekshirish muvaffaqiyatsiz." },
       { status: 401 }
     );
   }
@@ -64,56 +82,57 @@ export async function PATCH(request: NextRequest) {
     body = await request.json();
   } catch {
     return NextResponse.json(
-      { error: "JSON ma'lumotlari noto'g'ri." },
+      { error: "JSON ma’lumotlarini o‘qib bo‘lmadi." },
       { status: 400 }
     );
   }
 
   if (
-    !body ||
     typeof body !== "object" ||
+    body === null ||
     Array.isArray(body) ||
     typeof (body as Record<string, unknown>).prayerRemindersEnabled !==
       "boolean"
   ) {
     return NextResponse.json(
-      { error: "Eslatma holati true yoki false bo'lishi kerak." },
+      { error: "prayerRemindersEnabled boolean qiymat bo‘lishi kerak." },
       { status: 400 }
     );
   }
 
   const enabled = (
-    body as { prayerRemindersEnabled: boolean }
+    body as Record<string, boolean>
   ).prayerRemindersEnabled;
 
-  const { data, error } = await supabaseAdmin
+  const { data: profile, error } = await supabaseAdmin
     .from("users")
     .update({
+      prayer_reminders: enabled,
       prayer_reminders_enabled: enabled,
       updated_at: new Date().toISOString(),
     })
     .eq("telegram_id", telegramUser.id)
-    .select("prayer_reminders_enabled")
+    .select("telegram_id")
     .maybeSingle();
 
   if (error) {
-    console.error("Eslatma sozlamasini saqlash xatosi:", error);
+    console.error("Settings PATCH error:", error);
 
     return NextResponse.json(
-      { error: "Eslatma sozlamasini saqlab bo'lmadi." },
+      { error: "Eslatma sozlamalarini saqlashda xatolik yuz berdi." },
       { status: 500 }
     );
   }
 
-  if (!data) {
+  if (!profile) {
     return NextResponse.json(
-      { error: "Profil topilmadi. Avval profilni yuklang." },
+      { error: "Foydalanuvchi profili topilmadi. Avval botda /start bosing." },
       { status: 404 }
     );
   }
 
   return NextResponse.json({
     success: true,
-    prayerRemindersEnabled: data.prayer_reminders_enabled,
+    prayerRemindersEnabled: enabled,
   });
 }
