@@ -3,20 +3,23 @@ import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import { verifyTelegramInitData } from "@/lib/telegram-auth";
 
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
 const ALLOWED_CITIES = [
-  "Tashkent",
-  "Samarkand",
-  "Bukhara",
+  "Toshkent",
+  "Samarqand",
+  "Buxoro",
   "Jizzax",
   "Navoiy",
   "Sirdaryo",
-  "Andijan",
+  "Andijon",
   "Namangan",
-  "Fergana",
-  "Karshi",
+  "Farg‘ona",
+  "Qarshi",
   "Nukus",
-  "Termez",
-  "Urgench",
+  "Termiz",
+  "Urganch",
 ] as const;
 
 const ALLOWED_LANGUAGES = ["uz", "uz_cyr"] as const;
@@ -31,92 +34,130 @@ function getTelegramUser(request: NextRequest) {
   return verifyTelegramInitData(initData);
 }
 
+function isValidCity(value: unknown): value is (typeof ALLOWED_CITIES)[number] {
+  return (
+    typeof value === "string" &&
+    ALLOWED_CITIES.some((city) => city === value)
+  );
+}
+
+function isValidLanguage(
+  value: unknown
+): value is (typeof ALLOWED_LANGUAGES)[number] {
+  return (
+    typeof value === "string" &&
+    ALLOWED_LANGUAGES.some((language) => language === value)
+  );
+}
+
+function handleDatabaseError(error: unknown) {
+  console.error("Profile API database error:", error);
+
+  return NextResponse.json(
+    { error: "Profil ma’lumotlarini saqlashda xatolik yuz berdi." },
+    { status: 500 }
+  );
+}
+
+async function ensureUserExists(telegramId: number) {
+  const { data: existingUser, error: selectError } = await supabaseAdmin
+    .from("users")
+    .select("telegram_id")
+    .eq("telegram_id", telegramId)
+    .maybeSingle();
+
+  if (selectError) {
+    throw selectError;
+  }
+
+  if (existingUser) {
+    return;
+  }
+
+  const { error: insertError } = await supabaseAdmin
+    .from("users")
+    .insert({
+      telegram_id: telegramId,
+      language: "uz",
+      prayer_reminders: false,
+      prayer_reminders_enabled: false,
+      daily_reminders: false,
+    });
+
+  if (insertError) {
+    // Parallel so'rov sababli foydalanuvchi oldindan yaratilgan
+    // bo'lishi mumkin. Bunday vaziyatda mavjud qatorni tekshiramiz.
+    const { data: userAfterInsert, error: retryError } =
+      await supabaseAdmin
+        .from("users")
+        .select("telegram_id")
+        .eq("telegram_id", telegramId)
+        .maybeSingle();
+
+    if (retryError) {
+      throw retryError;
+    }
+
+    if (!userAfterInsert) {
+      throw insertError;
+    }
+  }
+}
+
 export async function GET(request: NextRequest) {
   const telegramUser = getTelegramUser(request);
 
   if (!telegramUser) {
     return NextResponse.json(
-      { error: "Telegram foydalanuvchisi tasdiqlanmadi." },
+      { error: "Telegram foydalanuvchisini tekshirish muvaffaqiyatsiz." },
       { status: 401 }
     );
   }
 
   try {
-    const { data: existingUser, error: readError } =
-      await supabaseAdmin
-        .from("users")
-        .select(
-          "telegram_id, language, city, prayer_reminders_enabled, daily_reminders"
-        )
-        .eq("telegram_id", telegramUser.id)
-        .maybeSingle();
+    await ensureUserExists(telegramUser.id);
 
-    if (readError) {
-      console.error("Profilni o'qish xatosi:", readError);
-      return NextResponse.json(
-        { error: "Profilni o'qib bo'lmadi." },
-        { status: 500 }
-      );
+    const { data: profile, error } = await supabaseAdmin
+      .from("users")
+      .select(
+        [
+          "telegram_id",
+          "language",
+          "city",
+          "prayer_reminders",
+          "prayer_reminders_enabled",
+          "daily_reminders",
+          "first_name",
+          "last_name",
+          "username",
+          "phone_number",
+          "created_at",
+          "updated_at",
+        ].join(", ")
+      )
+      .eq("telegram_id", telegramUser.id)
+      .single();
+
+    if (error) {
+      return handleDatabaseError(error);
     }
 
-    let user = existingUser;
-
-    if (!user) {
-      const { data: newUser, error: insertError } =
-        await supabaseAdmin
-          .from("users")
-          .upsert(
-            {
-              telegram_id: telegramUser.id,
-              language: "uz",
-              prayer_reminders_enabled: false,
-            },
-            { onConflict: "telegram_id", ignoreDuplicates: true }
-          )
-          .select(
-            "telegram_id, language, city, prayer_reminders_enabled, daily_reminders"
-          )
-          .maybeSingle();
-
-      if (insertError) {
-        console.error("Profil yaratish xatosi:", insertError);
-        return NextResponse.json(
-          { error: "Profil yaratib bo'lmadi." },
-          { status: 500 }
-        );
-      }
-
-      user = newUser;
-
-      // Boshqa so'rov bir vaqtda profil yaratgan bo'lishi mumkin.
-      if (!user) {
-        const { data: retryUser, error: retryError } =
-          await supabaseAdmin
-            .from("users")
-            .select(
-              "telegram_id, language, city, prayer_reminders_enabled, daily_reminders"
-            )
-            .eq("telegram_id", telegramUser.id)
-            .maybeSingle();
-
-        if (retryError || !retryUser) {
-          return NextResponse.json(
-            { error: "Profilni olishning imkoni bo'lmadi." },
-            { status: 500 }
-          );
-        }
-
-        user = retryUser;
-      }
-    }
-
-    return NextResponse.json({ profile: user });
+    return NextResponse.json({
+      profile: {
+        ...profile,
+        first_name: profile.first_name ?? telegramUser.first_name,
+        last_name:
+          profile.last_name ??
+          telegramUser.last_name ??
+          null,
+        username:
+          profile.username ??
+          telegramUser.username ??
+          null,
+      },
+    });
   } catch (error) {
-    console.error("Profil API xatosi:", error);
-    return NextResponse.json(
-      { error: "Serverda kutilmagan xatolik yuz berdi." },
-      { status: 500 }
-    );
+    return handleDatabaseError(error);
   }
 }
 
@@ -125,65 +166,70 @@ export async function PATCH(request: NextRequest) {
 
   if (!telegramUser) {
     return NextResponse.json(
-      { error: "Telegram foydalanuvchisi tasdiqlanmadi." },
+      { error: "Telegram foydalanuvchisini tekshirish muvaffaqiyatsiz." },
       { status: 401 }
     );
   }
 
+  let body: Record<string, unknown>;
+
   try {
-    const body: unknown = await request.json();
+    const parsedBody: unknown = await request.json();
 
-    if (!body || typeof body !== "object" || Array.isArray(body)) {
+    if (
+      typeof parsedBody !== "object" ||
+      parsedBody === null ||
+      Array.isArray(parsedBody)
+    ) {
       return NextResponse.json(
-        { error: "So'rov ma'lumotlari noto'g'ri." },
+        { error: "So‘rov ma’lumotlari noto‘g‘ri." },
         { status: 400 }
       );
     }
 
-    const input = body as Record<string, unknown>;
-    const updates: Record<string, string> = {};
+    body = parsedBody as Record<string, unknown>;
+  } catch {
+    return NextResponse.json(
+      { error: "JSON ma’lumotlarini o‘qib bo‘lmadi." },
+      { status: 400 }
+    );
+  }
 
-    if ("city" in input) {
-      if (
-        typeof input.city !== "string" ||
-        !ALLOWED_CITIES.includes(
-          input.city as (typeof ALLOWED_CITIES)[number]
-        )
-      ) {
-        return NextResponse.json(
-          { error: "Tanlangan shahar noto'g'ri." },
-          { status: 400 }
-        );
-      }
+  const updates: Record<string, string> = {};
 
-      updates.city = input.city;
-    }
-
-    if ("language" in input) {
-      if (
-        typeof input.language !== "string" ||
-        !ALLOWED_LANGUAGES.includes(
-          input.language as (typeof ALLOWED_LANGUAGES)[number]
-        )
-      ) {
-        return NextResponse.json(
-          { error: "Tanlangan til noto'g'ri." },
-          { status: 400 }
-        );
-      }
-
-      updates.language = input.language;
-    }
-
-    if (Object.keys(updates).length === 0) {
+  if (Object.prototype.hasOwnProperty.call(body, "city")) {
+    if (!isValidCity(body.city)) {
       return NextResponse.json(
-        { error: "Saqlash uchun sozlama yuborilmadi." },
+        { error: "Tanlangan shahar ro‘yxatda mavjud emas." },
         { status: 400 }
       );
     }
 
-    // Faqat tasdiqlangan Telegram foydalanuvchisining profilini yangilaymiz.
-    const { data: user, error } = await supabaseAdmin
+    updates.city = body.city;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(body, "language")) {
+    if (!isValidLanguage(body.language)) {
+      return NextResponse.json(
+        { error: "Tanlangan til qo‘llab-quvvatlanmaydi." },
+        { status: 400 }
+      );
+    }
+
+    updates.language = body.language;
+  }
+
+  if (Object.keys(updates).length === 0) {
+    return NextResponse.json(
+      { error: "Yangilash uchun shahar yoki til yuborilishi kerak." },
+      { status: 400 }
+    );
+  }
+
+  try {
+    await ensureUserExists(telegramUser.id);
+
+    const { data: profile, error } = await supabaseAdmin
       .from("users")
       .update({
         ...updates,
@@ -191,31 +237,29 @@ export async function PATCH(request: NextRequest) {
       })
       .eq("telegram_id", telegramUser.id)
       .select(
-        "telegram_id, language, city, prayer_reminders_enabled, daily_reminders"
+        [
+          "telegram_id",
+          "language",
+          "city",
+          "prayer_reminders",
+          "prayer_reminders_enabled",
+          "daily_reminders",
+          "first_name",
+          "last_name",
+          "username",
+          "phone_number",
+          "created_at",
+          "updated_at",
+        ].join(", ")
       )
-      .maybeSingle();
+      .single();
 
     if (error) {
-      console.error("Profilni yangilash xatosi:", error);
-      return NextResponse.json(
-        { error: "Profilni saqlash amalga oshmadi." },
-        { status: 500 }
-      );
+      return handleDatabaseError(error);
     }
 
-    if (!user) {
-      return NextResponse.json(
-        { error: "Profil topilmadi. Avval profilni yuklang." },
-        { status: 404 }
-      );
-    }
-
-    return NextResponse.json({ profile: user });
+    return NextResponse.json({ profile });
   } catch (error) {
-    console.error("Profilni saqlash xatosi:", error);
-    return NextResponse.json(
-      { error: "Sozlamalarni saqlashda xatolik yuz berdi." },
-      { status: 500 }
-    );
+    return handleDatabaseError(error);
   }
 }
